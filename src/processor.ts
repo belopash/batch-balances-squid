@@ -150,6 +150,8 @@ async function processBalances(ctx: Ctx): Promise<void> {
 
     await ctx.store.remove([...deletions.values()])
     await ctx.store.save([...accounts.values()])
+
+    ctx.log.child('accounts').info(`updated: ${accounts.size}, deleted ${deletions.size}`)
 }
 
 function getBalanceSetAccount(ctx: ChainContext, event: Event) {
