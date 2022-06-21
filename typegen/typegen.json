@@ -1,0 +1,23 @@
+{
+  "outDir": "../src/types/generated",
+  "specVersions": "./versions.jsonl",
+  "typesBundle": "kusama",
+  "events": [
+    "Balances.Transfer",
+    "Balances.Endowed",
+    "Balances.BalanceSet",
+    "Balances.Reserved",
+    "Balances.Unreserved",
+    "Balances.ReserveRepatriated",
+    "Balances.Deposit",
+    "Balances.Withdraw",
+    "Balances.Slashed"
+  ],
+  "calls": [
+  ],
+  "storage": [
+    "System.AccountNonce",
+    "System.Account",
+    "Balances.Account"
+  ]
+}
