@@ -3,4 +3,5 @@ type Account @entity {
   free: BigInt!
   reserved: BigInt!
   total: BigInt!
+  updatedAt: Int
 }

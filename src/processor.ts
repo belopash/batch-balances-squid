@@ -136,6 +136,7 @@ async function processBalances(ctx: Ctx): Promise<void> {
                     free: balance.free,
                     reserved: balance.reserved,
                     total: balance.free + balance.reserved,
+                    updatedAt: block.header.height,
                 })
             )
         } else {

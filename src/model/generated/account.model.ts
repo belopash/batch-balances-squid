@@ -18,4 +18,7 @@ export class Account {
 
   @Column_("numeric", {transformer: marshal.bigintTransformer, nullable: false})
   total!: bigint
+
+  @Column_("int4", {nullable: true})
+  updatedAt!: number | undefined | null
 }
