@@ -11,7 +11,7 @@ database:
   type: pg-14
 
 api:
-  cmd: [ "node", "lib/query-node" ]
+  cmd: [ "npx", "squid-graphql-server" ]
   graphql-examples:
     - query: |-
         query MyQuery {
