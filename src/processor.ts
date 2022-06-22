@@ -1,5 +1,16 @@
 import * as ss58 from '@subsquid/ss58'
-import { BatchContext, BatchProcessorItem, SubstrateBatchProcessor } from '@subsquid/substrate-processor'
+import {
+    BatchContext,
+    BatchProcessorItem,
+    decodeHex,
+    SubstrateBatchProcessor,
+    SubstrateCall,
+    toHex,
+} from '@subsquid/substrate-processor'
+import {
+    EventItem as BatchProcessorEventItem,
+    CallItem as BatchProcessorCallItem,
+} from '@subsquid/substrate-processor/lib/interfaces/dataSelection'
 import { Store, TypeormDatabase } from '@subsquid/typeorm-store'
 import { Account } from './model'
 import {
@@ -21,6 +32,9 @@ const processor = new SubstrateBatchProcessor()
     .setDataSource({
         archive: 'https://kusama.archive.subsquid.io/graphql',
         chain: 'wss://kusama-rpc.polkadot.io',
+    })
+    .setBlockRange({
+        from: 1400000,
     })
     .addEvent('Balances.Endowed', {
         data: { event: { args: true } },
@@ -49,119 +63,133 @@ const processor = new SubstrateBatchProcessor()
     .addEvent('Balances.Slashed', {
         data: { event: { args: true } },
     } as const)
+    .addCall('*', {
+        data: { call: { origin: true } },
+    } as const)
 
 type Item = BatchProcessorItem<typeof processor>
-type Ctx = BatchContext<Store, Item>
+type EventItem = Extract<Item, BatchProcessorEventItem<unknown>>
+type CallItem = Extract<Item, BatchProcessorCallItem<unknown>>
+type Context = BatchContext<Store, Item>
 
 processor.run(new TypeormDatabase(), processBalances)
 
-async function processBalances(ctx: Ctx): Promise<void> {
-    const accountIdsSet = new Set<Uint8Array>()
+async function processBalances(ctx: Context): Promise<void> {
+    const accountIdsHex = new Set<string>()
 
     for (const block of ctx.blocks) {
         for (const item of block.items) {
-            switch (item.name) {
-                case 'Balances.BalanceSet': {
-                    const account = getBalanceSetAccount(ctx, item.event)
-                    accountIdsSet.add(account)
-                    break
-                }
-                case 'Balances.Endowed': {
-                    const account = getEndowedAccount(ctx, item.event)
-                    accountIdsSet.add(account)
-                    break
-                }
-                case 'Balances.Deposit': {
-                    const account = getDepositAccount(ctx, item.event)
-                    accountIdsSet.add(account)
-                    break
-                }
-                case 'Balances.Reserved': {
-                    const account = getReservedAccount(ctx, item.event)
-                    accountIdsSet.add(account)
-                    break
-                }
-                case 'Balances.Unreserved': {
-                    const account = getUnreservedAccount(ctx, item.event)
-                    accountIdsSet.add(account)
-                    break
-                }
-                case 'Balances.Withdraw': {
-                    const account = getWithdrawAccount(ctx, item.event)
-                    accountIdsSet.add(account)
-                    break
-                }
-                case 'Balances.Slashed': {
-                    const account = getSlashedAccount(ctx, item.event)
-                    accountIdsSet.add(account)
-                    break
-                }
-                case 'Balances.Transfer': {
-                    const accounts = getTransferAccounts(ctx, item.event)
-                    accountIdsSet.add(accounts[0])
-                    accountIdsSet.add(accounts[1])
-                    break
-                }
-                case 'Balances.ReserveRepatriated': {
-                    const accounts = getReserveRepatriatedAccounts(ctx, item.event)
-                    accountIdsSet.add(accounts[0])
-                    accountIdsSet.add(accounts[1])
-                    break
-                }
+            if (item.kind === 'call') {
+                processBalancesCallItem(ctx, item, accountIdsHex)
+            } else if (item.kind === 'event') {
+                processBalancesEventItem(ctx, item, accountIdsHex)
             }
         }
     }
+    if (accountIdsHex.size === 0) return
 
     const block = ctx.blocks[ctx.blocks.length - 1]
 
-    const accountIds = [...accountIdsSet]
+    const accountIdsU8 = [...accountIdsHex].map((id) => decodeHex(id))
 
-    const balances = await getBalances(ctx, block.header, accountIds)
+    const balances = await getBalances(ctx, block.header, accountIdsU8)
     if (!balances) {
         ctx.log.warn('No balances')
         return
     }
 
     const accounts = new Map<string, Account>()
-    const deletions = new Map<string, Account>()
 
-    for (let i = 0; i < accountIds.length; i++) {
-        const id = ss58.codec('kusama').encode(accountIds[i])
+    for (let i = 0; i < accountIdsU8.length; i++) {
+        const id = encodeId(accountIdsU8[i])
         const balance = balances[i]
-        if (balance) {
-            accounts.set(
+        if (!balance) continue
+        accounts.set(
+            id,
+            new Account({
                 id,
-                new Account({
-                    id,
-                    free: balance.free,
-                    reserved: balance.reserved,
-                    total: balance.free + balance.reserved,
-                    updatedAt: block.header.height,
-                })
-            )
-        } else {
-            deletions.set(
-                id,
-                new Account({
-                    id,
-                })
-            )
-        }
+                free: balance.free,
+                reserved: balance.reserved,
+                total: balance.free + balance.reserved,
+                updatedAt: block.header.height,
+            })
+        )
     }
 
-    await ctx.store.remove([...deletions.values()])
     await ctx.store.save([...accounts.values()])
 
-    ctx.log.child('accounts').info(`updated: ${accounts.size}, deleted ${deletions.size}`)
+    ctx.log.child('accounts').info(`updated: ${accounts.size}`)
+}
+
+function processBalancesCallItem(ctx: Context, item: CallItem, accountIdsHex: Set<string>) {
+    const call = item.call as SubstrateCall
+    if (call.parent != null) return
+
+    const id = getOriginAccountId(call.origin)
+    if (id == null) return
+
+    accountIdsHex.add(id)
+}
+
+function processBalancesEventItem(ctx: Context, item: EventItem, accountIdsHex: Set<string>) {
+    switch (item.name) {
+        case 'Balances.BalanceSet': {
+            const account = getBalanceSetAccount(ctx, item.event)
+            accountIdsHex.add(account)
+            break
+        }
+        case 'Balances.Endowed': {
+            const account = getEndowedAccount(ctx, item.event)
+            accountIdsHex.add(account)
+            break
+        }
+        case 'Balances.Deposit': {
+            const account = getDepositAccount(ctx, item.event)
+            accountIdsHex.add(account)
+            break
+        }
+        case 'Balances.Reserved': {
+            const account = getReservedAccount(ctx, item.event)
+            accountIdsHex.add(account)
+            break
+        }
+        case 'Balances.Unreserved': {
+            const account = getUnreservedAccount(ctx, item.event)
+            accountIdsHex.add(account)
+            break
+        }
+        case 'Balances.Withdraw': {
+            const account = getWithdrawAccount(ctx, item.event)
+            accountIdsHex.add(account)
+            break
+        }
+        case 'Balances.Slashed': {
+            const account = getSlashedAccount(ctx, item.event)
+            accountIdsHex.add(account)
+            break
+        }
+        case 'Balances.Transfer': {
+            const accounts = getTransferAccounts(ctx, item.event)
+            accountIdsHex.add(accounts[0])
+            accountIdsHex.add(accounts[1])
+            break
+        }
+        case 'Balances.ReserveRepatriated': {
+            const accounts = getReserveRepatriatedAccounts(ctx, item.event)
+            accountIdsHex.add(accounts[0])
+            accountIdsHex.add(accounts[1])
+            break
+        }
+    }
 }
 
 function getBalanceSetAccount(ctx: ChainContext, event: Event) {
     const data = new BalancesBalanceSetEvent(ctx, event)
 
     if (data.isV1031) {
-        return data.asV1031[0]
+        return toHex(data.asV1031[0])
     } else if (data.isV9130) {
-        return data.asV9130.who
+        return toHex(data.asV9130.who)
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -171,11 +199,11 @@ function getTransferAccounts(ctx: ChainContext, event: Event) {
     const data = new BalancesTransferEvent(ctx, event)
 
     if (data.isV1020) {
-        return data.asV1020.slice(0, 2) as Uint8Array[]
+        return [toHex(data.asV1020[0]), toHex(data.asV1020[1])]
     } else if (data.isV1050) {
-        return data.asV1050.slice(0, 2) as Uint8Array[]
+        return [toHex(data.asV1050[0]), toHex(data.asV1050[1])]
     } else if (data.isV9130) {
-        return [data.asV9130.from, data.asV9130.to]
+        return [toHex(data.asV9130.from), toHex(data.asV9130.to)]
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -185,9 +213,9 @@ function getEndowedAccount(ctx: ChainContext, event: Event) {
     const data = new BalancesEndowedEvent(ctx, event)
 
     if (data.isV1050) {
-        return data.asV1050[0]
+        return toHex(data.asV1050[0])
     } else if (data.isV9130) {
-        return data.asV9130.account
+        return toHex(data.asV9130.account)
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -197,9 +225,9 @@ function getDepositAccount(ctx: ChainContext, event: Event) {
     const data = new BalancesDepositEvent(ctx, event)
 
     if (data.isV1032) {
-        return data.asV1032[0]
+        return toHex(data.asV1032[0])
     } else if (data.isV9130) {
-        return data.asV9130.who
+        return toHex(data.asV9130.who)
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -209,9 +237,9 @@ function getReservedAccount(ctx: ChainContext, event: Event) {
     const data = new BalancesReservedEvent(ctx, event)
 
     if (data.isV2008) {
-        return data.asV2008[0]
+        return toHex(data.asV2008[0])
     } else if (data.isV9130) {
-        return data.asV9130.who
+        return toHex(data.asV9130.who)
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -221,9 +249,9 @@ function getUnreservedAccount(ctx: ChainContext, event: Event) {
     const data = new BalancesUnreservedEvent(ctx, event)
 
     if (data.isV2008) {
-        return data.asV2008[0]
+        return toHex(data.asV2008[0])
     } else if (data.isV9130) {
-        return data.asV9130.who
+        return toHex(data.asV9130.who)
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -233,9 +261,9 @@ function getWithdrawAccount(ctx: ChainContext, event: Event) {
     const data = new BalancesWithdrawEvent(ctx, event)
 
     if (data.isV9122) {
-        return data.asV9122[0]
+        return toHex(data.asV9122[0])
     } else if (data.isV9130) {
-        return data.asV9130.who
+        return toHex(data.asV9130.who)
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -245,9 +273,9 @@ function getSlashedAccount(ctx: ChainContext, event: Event) {
     const data = new BalancesSlashedEvent(ctx, event)
 
     if (data.isV9122) {
-        return data.asV9122[0]
+        return toHex(data.asV9122[0])
     } else if (data.isV9130) {
-        return data.asV9130.who
+        return toHex(data.asV9130.who)
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -257,9 +285,9 @@ function getReserveRepatriatedAccounts(ctx: ChainContext, event: Event) {
     const data = new BalancesReserveRepatriatedEvent(ctx, event)
 
     if (data.isV2008) {
-        return data.asV2008.slice(0, 2) as Uint8Array[]
+        return [toHex(data.asV2008[0]), toHex(data.asV2008[1])]
     } else if (data.isV9130) {
-        return [data.asV9130.from, data.asV9130.to]
+        return [toHex(data.asV9130.from), toHex(data.asV9130.to)]
     } else {
         throw new UnknownVersionError(data.constructor.name)
     }
@@ -313,4 +341,17 @@ export class UnknownVersionError extends Error {
     constructor(name: string) {
         super(`There is no relevant version for ${name}`)
     }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getOriginAccountId(origin: any) {
+    if (origin.__kind === 'system' && origin.value.__kind === 'Signed') {
+        return origin.value.value
+    } else {
+        return undefined
+    }
+}
+
+export function encodeId(id: Uint8Array) {
+    return ss58.codec('kusama').encode(id)
 }
