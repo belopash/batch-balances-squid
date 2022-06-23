@@ -1,16 +1,15 @@
 import * as ss58 from '@subsquid/ss58'
 import {
     BatchContext,
+    BatchProcessorCallItem,
+    BatchProcessorEventItem,
     BatchProcessorItem,
     decodeHex,
     SubstrateBatchProcessor,
+    SubstrateBlock,
     SubstrateCall,
     toHex,
 } from '@subsquid/substrate-processor'
-import {
-    EventItem as BatchProcessorEventItem,
-    CallItem as BatchProcessorCallItem,
-} from '@subsquid/substrate-processor/lib/interfaces/dataSelection'
 import { Store, TypeormDatabase } from '@subsquid/typeorm-store'
 import { Account } from './model'
 import {
@@ -24,7 +23,12 @@ import {
     BalancesUnreservedEvent,
     BalancesWithdrawEvent,
 } from './types/generated/events'
-import { BalancesAccountStorage, SystemAccountStorage } from './types/generated/storage'
+import {
+    BalancesAccountStorage,
+    BalancesFreeBalanceStorage,
+    BalancesReservedBalanceStorage,
+    SystemAccountStorage,
+} from './types/generated/storage'
 import { Event, Block, ChainContext } from './types/generated/support'
 
 const processor = new SubstrateBatchProcessor()
@@ -34,7 +38,7 @@ const processor = new SubstrateBatchProcessor()
         chain: 'wss://kusama-rpc.polkadot.io',
     })
     .setBlockRange({
-        from: 1400000,
+        from: 0,
     })
     .addEvent('Balances.Endowed', {
         data: { event: { args: true } },
@@ -68,8 +72,8 @@ const processor = new SubstrateBatchProcessor()
     } as const)
 
 type Item = BatchProcessorItem<typeof processor>
-type EventItem = Extract<Item, BatchProcessorEventItem<unknown>>
-type CallItem = Extract<Item, BatchProcessorCallItem<unknown>>
+type EventItem = BatchProcessorEventItem<typeof processor>
+type CallItem = BatchProcessorCallItem<typeof processor>
 type Context = BatchContext<Store, Item>
 
 processor.run(new TypeormDatabase(), processBalances)
@@ -86,13 +90,15 @@ async function processBalances(ctx: Context): Promise<void> {
             }
         }
     }
-    if (accountIdsHex.size === 0) return
 
     const block = ctx.blocks[ctx.blocks.length - 1]
-
     const accountIdsU8 = [...accountIdsHex].map((id) => decodeHex(id))
 
-    const balances = await getBalances(ctx, block.header, accountIdsU8)
+    await saveAccounts(ctx, block.header, accountIdsU8)
+}
+
+async function saveAccounts(ctx: Context, block: SubstrateBlock, accountIds: Uint8Array[]) {
+    const balances = await getBalances(ctx, block, accountIds)
     if (!balances) {
         ctx.log.warn('No balances')
         return
@@ -100,8 +106,8 @@ async function processBalances(ctx: Context): Promise<void> {
 
     const accounts = new Map<string, Account>()
 
-    for (let i = 0; i < accountIdsU8.length; i++) {
-        const id = encodeId(accountIdsU8[i])
+    for (let i = 0; i < accountIds.length; i++) {
+        const id = encodeId(accountIds[i])
         const balance = balances[i]
         if (!balance) continue
         accounts.set(
@@ -111,7 +117,7 @@ async function processBalances(ctx: Context): Promise<void> {
                 free: balance.free,
                 reserved: balance.reserved,
                 total: balance.free + balance.reserved,
-                updatedAt: block.header.height,
+                updatedAt: block.height,
             })
         )
     }
@@ -305,7 +311,8 @@ async function getBalances(
 ): Promise<(Balance | undefined)[] | undefined> {
     return (
         (await getSystemAccountBalances(ctx, block, accounts)) ||
-        (await getBalancesAccountBalances(ctx, block, accounts))
+        (await getBalancesAccountBalances(ctx, block, accounts)) ||
+        (await getBalancesAccountBalancesOld(ctx, block, accounts))
     )
 }
 
@@ -321,6 +328,22 @@ async function getBalancesAccountBalances(ctx: ChainContext, block: Block, accou
     )
 
     return data.map((d) => ({ free: d.free, reserved: d.reserved }))
+}
+
+async function getBalancesAccountBalancesOld(ctx: ChainContext, block: Block, accounts: Uint8Array[]) {
+    const storageFree = new BalancesFreeBalanceStorage(ctx, block)
+
+    const dataFree = storageFree.isExists
+        ? await storageFree.getManyAsV1020(accounts)
+        : new Array(accounts.length).fill(0n)
+
+    const storageReserved = new BalancesReservedBalanceStorage(ctx, block)
+
+    const dataReserved = storageReserved.isExists
+        ? await storageReserved.getManyAsV1020(accounts)
+        : new Array(accounts.length).fill(0n)
+
+    return dataFree.map((f, i) => ({ free: f, reserved: dataReserved[i] }))
 }
 
 async function getSystemAccountBalances(ctx: ChainContext, block: Block, accounts: Uint8Array[]) {
@@ -345,7 +368,7 @@ export class UnknownVersionError extends Error {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getOriginAccountId(origin: any) {
-    if (origin.__kind === 'system' && origin.value.__kind === 'Signed') {
+    if (origin && origin.__kind === 'system' && origin.value.__kind === 'Signed') {
         return origin.value.value
     } else {
         return undefined

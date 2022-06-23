@@ -56,6 +56,126 @@ export class BalancesAccountStorage {
   }
 }
 
+export class BalancesFreeBalanceStorage {
+  private readonly _chain: Chain
+  private readonly blockHash: string
+
+  constructor(ctx: BlockContext)
+  constructor(ctx: ChainContext, block: Block)
+  constructor(ctx: BlockContext, block?: Block) {
+    block = block || ctx.block
+    this.blockHash = block.hash
+    this._chain = ctx._chain
+  }
+
+  /**
+   *  The 'free' balance of a given account.
+   * 
+   *  This is the only balance that matters in terms of most operations on tokens. It
+   *  alone is used to determine the balance when in the contract execution environment. When this
+   *  balance falls below the value of `ExistentialDeposit`, then the 'current account' is
+   *  deleted: specifically `FreeBalance`. Further, the `OnFreeBalanceZero` callback
+   *  is invoked, giving a chance to external modules to clean up data associated with
+   *  the deleted account.
+   * 
+   *  `system::AccountNonce` is also deleted if `ReservedBalance` is also zero (it also gets
+   *  collapsed to zero if it ever becomes less than `ExistentialDeposit`.
+   */
+  get isV1020() {
+    return this._chain.getStorageItemTypeHash('Balances', 'FreeBalance') === '0bac40afaf72ceea5a87ae2baaa5fe7f69915323f3293bdd970e7790a9d968c0'
+  }
+
+  /**
+   *  The 'free' balance of a given account.
+   * 
+   *  This is the only balance that matters in terms of most operations on tokens. It
+   *  alone is used to determine the balance when in the contract execution environment. When this
+   *  balance falls below the value of `ExistentialDeposit`, then the 'current account' is
+   *  deleted: specifically `FreeBalance`. Further, the `OnFreeBalanceZero` callback
+   *  is invoked, giving a chance to external modules to clean up data associated with
+   *  the deleted account.
+   * 
+   *  `system::AccountNonce` is also deleted if `ReservedBalance` is also zero (it also gets
+   *  collapsed to zero if it ever becomes less than `ExistentialDeposit`.
+   */
+  async getAsV1020(key: v1020.AccountId): Promise<v1020.Balance> {
+    assert(this.isV1020)
+    return this._chain.getStorage(this.blockHash, 'Balances', 'FreeBalance', key)
+  }
+
+  async getManyAsV1020(keys: v1020.AccountId[]): Promise<(v1020.Balance)[]> {
+    assert(this.isV1020)
+    return this._chain.queryStorage(this.blockHash, 'Balances', 'FreeBalance', keys.map(k => [k]))
+  }
+
+  /**
+   * Checks whether the storage item is defined for the current chain version.
+   */
+  get isExists(): boolean {
+    return this._chain.getStorageItemTypeHash('Balances', 'FreeBalance') != null
+  }
+}
+
+export class BalancesReservedBalanceStorage {
+  private readonly _chain: Chain
+  private readonly blockHash: string
+
+  constructor(ctx: BlockContext)
+  constructor(ctx: ChainContext, block: Block)
+  constructor(ctx: BlockContext, block?: Block) {
+    block = block || ctx.block
+    this.blockHash = block.hash
+    this._chain = ctx._chain
+  }
+
+  /**
+   *  The amount of the balance of a given account that is externally reserved; this can still get
+   *  slashed, but gets slashed last of all.
+   * 
+   *  This balance is a 'reserve' balance that other subsystems use in order to set aside tokens
+   *  that are still 'owned' by the account holder, but which are suspendable.
+   * 
+   *  When this balance falls below the value of `ExistentialDeposit`, then this 'reserve account'
+   *  is deleted: specifically, `ReservedBalance`.
+   * 
+   *  `system::AccountNonce` is also deleted if `FreeBalance` is also zero (it also gets
+   *  collapsed to zero if it ever becomes less than `ExistentialDeposit`.)
+   */
+  get isV1020() {
+    return this._chain.getStorageItemTypeHash('Balances', 'ReservedBalance') === '0bac40afaf72ceea5a87ae2baaa5fe7f69915323f3293bdd970e7790a9d968c0'
+  }
+
+  /**
+   *  The amount of the balance of a given account that is externally reserved; this can still get
+   *  slashed, but gets slashed last of all.
+   * 
+   *  This balance is a 'reserve' balance that other subsystems use in order to set aside tokens
+   *  that are still 'owned' by the account holder, but which are suspendable.
+   * 
+   *  When this balance falls below the value of `ExistentialDeposit`, then this 'reserve account'
+   *  is deleted: specifically, `ReservedBalance`.
+   * 
+   *  `system::AccountNonce` is also deleted if `FreeBalance` is also zero (it also gets
+   *  collapsed to zero if it ever becomes less than `ExistentialDeposit`.)
+   */
+  async getAsV1020(key: v1020.AccountId): Promise<v1020.Balance> {
+    assert(this.isV1020)
+    return this._chain.getStorage(this.blockHash, 'Balances', 'ReservedBalance', key)
+  }
+
+  async getManyAsV1020(keys: v1020.AccountId[]): Promise<(v1020.Balance)[]> {
+    assert(this.isV1020)
+    return this._chain.queryStorage(this.blockHash, 'Balances', 'ReservedBalance', keys.map(k => [k]))
+  }
+
+  /**
+   * Checks whether the storage item is defined for the current chain version.
+   */
+  get isExists(): boolean {
+    return this._chain.getStorageItemTypeHash('Balances', 'ReservedBalance') != null
+  }
+}
+
 export class SystemAccountStorage {
   private readonly _chain: Chain
   private readonly blockHash: string

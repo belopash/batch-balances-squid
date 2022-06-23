@@ -18,6 +18,8 @@
   "storage": [
     "System.AccountNonce",
     "System.Account",
-    "Balances.Account"
+    "Balances.Account",
+    "Balances.FreeBalance",
+    "Balances.ReservedBalance"
   ]
 }
